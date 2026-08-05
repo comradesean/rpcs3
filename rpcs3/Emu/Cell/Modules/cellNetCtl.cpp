@@ -129,6 +129,7 @@ void cellNetCtlTerm()
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
 	nph.is_netctl_init = false;
+	nph.clear_netctl_handlers();
 }
 
 error_code cellNetCtlGetState(vm::ptr<s32> state)
@@ -154,7 +155,7 @@ error_code cellNetCtlGetState(vm::ptr<s32> state)
 
 error_code cellNetCtlAddHandler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<void> arg, vm::ptr<s32> hid)
 {
-	cellNetCtl.todo("cellNetCtlAddHandler(handler=*0x%x, arg=*0x%x, hid=*0x%x)", handler, arg, hid);
+	cellNetCtl.warning("cellNetCtlAddHandler(handler=*0x%x, arg=*0x%x, hid=*0x%x)", handler, arg, hid);
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
@@ -163,17 +164,26 @@ error_code cellNetCtlAddHandler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<void
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
 
-	if (!hid)
+	if (!hid || !handler)
 	{
 		return CELL_NET_CTL_ERROR_INVALID_ADDR;
 	}
+
+	const s32 new_hid = nph.add_netctl_handler(handler, vm::static_ptr_cast<u32>(arg));
+
+	if (new_hid < 0)
+	{
+		return CELL_NET_CTL_ERROR_HANDLER_MAX;
+	}
+
+	*hid = new_hid;
 
 	return CELL_OK;
 }
 
 error_code cellNetCtlDelHandler(s32 hid)
 {
-	cellNetCtl.todo("cellNetCtlDelHandler(hid=0x%x)", hid);
+	cellNetCtl.warning("cellNetCtlDelHandler(hid=0x%x)", hid);
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 
@@ -182,9 +192,14 @@ error_code cellNetCtlDelHandler(s32 hid)
 		return CELL_NET_CTL_ERROR_NOT_INITIALIZED;
 	}
 
-	if (hid > 3)
+	if (hid < 0 || hid > 3)
 	{
 		return CELL_NET_CTL_ERROR_INVALID_ID;
+	}
+
+	if (!nph.del_netctl_handler(hid))
+	{
+		return CELL_NET_CTL_ERROR_ID_NOT_FOUND;
 	}
 
 	return CELL_OK;
@@ -298,13 +313,20 @@ struct netstart_hack
 		thread_ctrl::wait_for(500'000);
 
 		sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_LOADED, 0);
+
+		// The dialog is where the connection is actually established on real hardware, so this is
+		// when netctl handlers observe the state transitions up to IPObtained
+		auto& nph = g_fxo->get<named_thread<np::np_handler>>();
+		nph.signal_netctl_connect_sequence();
+		nph.signal_np_manager_online();
+
 		sysutil_send_system_cmd(CELL_SYSUTIL_NET_CTL_NETSTART_FINISHED, 0);
 	}
 };
 
 error_code cellNetCtlNetStartDialogLoadAsync(vm::cptr<CellNetCtlNetStartDialogParam> param)
 {
-	cellNetCtl.warning("cellNetCtlNetStartDialogLoadAsync(param=*0x%x)", param);
+	cellNetCtl.warning("cellNetCtlNetStartDialogLoadAsync(param=*0x%x, type=%d)", param, param ? +param->type : -1);
 
 	auto& nph = g_fxo->get<named_thread<np::np_handler>>();
 

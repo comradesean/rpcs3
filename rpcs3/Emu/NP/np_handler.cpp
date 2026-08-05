@@ -979,6 +979,116 @@ namespace np
 		return basic_handler.context;
 	}
 
+	s32 np_handler::add_netctl_handler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<u32> arg)
+	{
+		std::lock_guard lock(netctl_handlers.mutex);
+
+		for (s32 hid = 0; hid < static_cast<s32>(netctl_handlers.list.size()); hid++)
+		{
+			auto& entry = netctl_handlers.list[hid];
+
+			if (entry.registered)
+			{
+				continue;
+			}
+
+			entry.registered = true;
+			entry.handler_func = handler;
+			entry.handler_arg = arg;
+
+			// No events are sent here: on real hardware a handler only observes actual state
+			// transitions, which happen when the connection is established (see
+			// signal_netctl_connect_sequence)
+
+			return hid;
+		}
+
+		return -1;
+	}
+
+	bool np_handler::del_netctl_handler(s32 hid)
+	{
+		std::lock_guard lock(netctl_handlers.mutex);
+
+		if (hid < 0 || hid >= static_cast<s32>(netctl_handlers.list.size()) || !netctl_handlers.list[hid].registered)
+		{
+			return false;
+		}
+
+		netctl_handlers.list[hid] = {};
+		return true;
+	}
+
+	void np_handler::signal_netctl_connect_sequence()
+	{
+		if (!is_connected)
+		{
+			return;
+		}
+
+		std::lock_guard lock(netctl_handlers.mutex);
+
+		for (const auto& entry : netctl_handlers.list)
+		{
+			if (!entry.registered)
+			{
+				continue;
+			}
+
+			queue_netctl_callback(entry.handler_func, entry.handler_arg, CELL_NET_CTL_STATE_Disconnected, CELL_NET_CTL_STATE_Connecting, CELL_NET_CTL_EVENT_CONNECT_REQ, 0);
+			queue_netctl_callback(entry.handler_func, entry.handler_arg, CELL_NET_CTL_STATE_Connecting, CELL_NET_CTL_STATE_IPObtaining, CELL_NET_CTL_EVENT_ESTABLISH, 0);
+			queue_netctl_callback(entry.handler_func, entry.handler_arg, CELL_NET_CTL_STATE_IPObtaining, CELL_NET_CTL_STATE_IPObtained, CELL_NET_CTL_EVENT_GET_IP, 0);
+		}
+	}
+
+	void np_handler::queue_np_manager_callback(s32 event, s32 result)
+	{
+		if (!manager_cb)
+		{
+			return;
+		}
+
+		nph_log.trace("Queuing NP manager callback: event=%d, result=%d", event, result);
+
+		sysutil_register_cb([manager_cb = this->manager_cb, manager_cb_arg = this->manager_cb_arg, event, result](ppu_thread& cb_ppu) -> s32
+			{
+				manager_cb(cb_ppu, event, result, manager_cb_arg);
+				return 0;
+			});
+	}
+
+	void np_handler::signal_np_manager_online()
+	{
+		if (!is_psn_active)
+		{
+			return;
+		}
+
+		// Nothing ever drove the sign-in status, so a game waiting to be told it is online waits
+		// forever; walk the progression the callback is documented to report
+		queue_np_manager_callback(SCE_NP_MANAGER_STATUS_GETTING_TICKET, 0);
+		queue_np_manager_callback(SCE_NP_MANAGER_STATUS_GETTING_PROFILE, 0);
+		queue_np_manager_callback(SCE_NP_MANAGER_STATUS_LOGGING_IN, 0);
+		queue_np_manager_callback(SCE_NP_MANAGER_STATUS_ONLINE, 0);
+	}
+
+	void np_handler::clear_netctl_handlers()
+	{
+		std::lock_guard lock(netctl_handlers.mutex);
+		netctl_handlers.list = {};
+	}
+
+	void np_handler::queue_netctl_callback(vm::ptr<cellNetCtlHandler> handler_func, vm::ptr<u32> handler_arg, s32 prev_state, s32 new_state, s32 event, s32 error_code)
+	{
+		nph_log.trace("Queuing netctl callback: handler=*0x%x, prev_state=%d, new_state=%d, event=%d", handler_func, prev_state, new_state, event);
+
+		sysutil_register_cb([handler_func, handler_arg, prev_state, new_state, event, error_code](ppu_thread& cb_ppu) -> s32
+			{
+				handler_func(cb_ppu, prev_state, new_state, event, error_code, handler_arg);
+				return 0;
+			});
+	}
+
 	bool np_handler::send_basic_event(s32 event, s32 retCode, u32 reqId)
 	{
 		if (basic_handler_registered)

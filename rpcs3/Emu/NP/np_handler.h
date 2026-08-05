@@ -9,6 +9,7 @@
 #include "Emu/Cell/Modules/sceNp.h"
 #include "Emu/Cell/Modules/sceNp2.h"
 #include "Emu/Cell/Modules/cellSysutil.h"
+#include "Emu/Cell/Modules/cellNetCtl.h"
 
 #include "Emu/NP/rpcn_client.h"
 #include "Emu/NP/np_allocator.h"
@@ -145,6 +146,16 @@ namespace np
 
 		void register_basic_handler(vm::cptr<SceNpCommunicationId> context, vm::ptr<SceNpBasicEventHandler> handler, vm::ptr<void> arg, bool context_sensitive);
 		SceNpCommunicationId get_basic_handler_context();
+
+		// cellNetCtl handlers (hid 0-3), returns hid or -1 if the table is full
+		s32 add_netctl_handler(vm::ptr<cellNetCtlHandler> handler, vm::ptr<u32> arg);
+		bool del_netctl_handler(s32 hid);
+		void clear_netctl_handlers();
+		// Fires the Disconnected->IPObtained transitions to every registered handler
+		void signal_netctl_connect_sequence();
+		// Fires the NP manager sign-in progression up to STATUS_ONLINE
+		void signal_np_manager_online();
+		void queue_np_manager_callback(s32 event, s32 result);
 		void queue_basic_event(basic_event to_queue);
 		bool send_basic_event(s32 event, s32 retCode, u32 reqId);
 		error_code get_basic_event(vm::ptr<s32> event, vm::ptr<SceNpUserInfo> from, vm::ptr<u8> data, vm::ptr<u32> size);
@@ -409,6 +420,22 @@ namespace np
 			vm::ptr<void> handler_arg;
 			bool context_sensitive = false;
 		} basic_handler;
+
+		// cellNetCtl handlers, indexed by hid (not saved in savestates)
+		struct netctl_handler
+		{
+			bool registered = false;
+			vm::ptr<cellNetCtlHandler> handler_func;
+			vm::ptr<u32> handler_arg;
+		};
+
+		struct
+		{
+			shared_mutex mutex;
+			std::array<netctl_handler, 4> list{};
+		} netctl_handlers;
+
+		static void queue_netctl_callback(vm::ptr<cellNetCtlHandler> handler_func, vm::ptr<u32> handler_arg, s32 prev_state, s32 new_state, s32 event, s32 error_code);
 
 		bool is_connected  = false;
 		bool is_psn_active = false;
