@@ -33,6 +33,12 @@ void fmt_class_string<CellGcmError>::format(std::string& out, u64 arg)
 	});
 }
 
+template<>
+void fmt_class_string<CellGcmContextData>::format(std::string& out, u64 /*arg*/)
+{
+	out += "CellGcmContextData";
+}
+
 namespace rsx
 {
 	u32 make_command(vm::bptr<u32>& dst, u32 start_register, std::initializer_list<any32> values)
